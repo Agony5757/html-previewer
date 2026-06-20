@@ -2,18 +2,21 @@
 # Convenience client for publishing previews to the preview hosting service.
 #
 # Usage:
-#   preview-publish.sh <path> [topic] [days]
-#     <path>  : a folder (multi-file site), a .zip, or a single .html file
-#     topic   : URL segment / name (default: derived from the file/folder name)
-#     days    : expiry in days, 1..30 (default: 7)
+#   preview-publish.sh <path> [topic] [expiry]
+#     <path>   : a folder (multi-file site), a .zip, or a single .html file
+#     topic    : URL segment / name (default: derived from the file/folder name)
+#     expiry   : N        -> N days (1..30, default 7)
+#                N{s,m,h,d} -> seconds / minutes / hours / days (e.g. 2m, 36h)
 #
 #   Same-name update (default): re-publishing under a name (topic) that is still
-#   live overwrites it in place, keeping the SAME URL. Set PREVIEW_NEW=1 to force
-#   a brand-new capability URL instead.
+#   live AND not past its expiry overwrites it in place, keeping the SAME URL. A
+#   name whose previous preview has expired gets a brand-new URL. Set PREVIEW_NEW=1
+#   to always force a brand-new capability URL.
 #
-#   preview-publish.sh --list            # list your live previews
-#   preview-publish.sh --list-all        # include expired/deleted
-#   preview-publish.sh --delete <hash>   # reclaim a preview now
+#   preview-publish.sh --dry-run <path> [topic]   # predict update vs new (no upload)
+#   preview-publish.sh --list                     # list your live previews
+#   preview-publish.sh --list-all                 # include expired/deleted
+#   preview-publish.sh --delete <hash>            # reclaim a preview now
 #
 # Config (env or ~/.config/preview/config):
 #   PREVIEW_API_BASE   default https://preview.example.com
@@ -36,18 +39,64 @@ case "${1:-}" in
      grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
+DRY=0
+if [[ "${1:-}" == "--dry-run" || "${1:-}" == "--check" ]]; then
+  DRY=1
+  shift
+fi
+
 SRC="${1%/}"
 [[ -e "$SRC" ]] || { echo "no such file or directory: $SRC" >&2; exit 1; }
 base="$(basename "$SRC")"
-DAYS="${3:-7}"
+
+# Derive topic (the "name") + type the same way for dry-run and publish.
+if [[ -d "$SRC" ]]; then
+  TYPE=zip
+  TOPIC="${2:-$base}"
+else
+  case "$SRC" in
+    *.zip)        TYPE=zip  ;;
+    *.htm|*.html) TYPE=html ;;
+    *) echo "unsupported type (use a folder, .zip, or .html): $SRC" >&2; exit 1 ;;
+  esac
+  TOPIC="${2:-${base%.*}}"
+fi
+
+# --- dry-run: ask the server what a real publish WOULD do (no upload) ---
+if [[ "$DRY" == "1" ]]; then
+  check_args=(-G "${auth[@]}" --data-urlencode "topic=${TOPIC}")
+  [[ "${PREVIEW_NEW:-}" == "1" ]] && check_args+=(--data-urlencode "new=1")
+  echo "dry-run: topic=$TOPIC" >&2
+  curl -fsS "${check_args[@]}" "${API_BASE}/_api/check"
+  echo
+  exit 0
+fi
+
+# --- expiry: N days, or N{s,m,h,d} -> X-TTL seconds ---
+EXPIRY="${3:-}"
+expiry_hdr=()
+if [[ -z "$EXPIRY" ]]; then
+  expiry_hdr=(-H "X-Days: 7")
+elif [[ "$EXPIRY" =~ ^[0-9]+$ ]]; then
+  expiry_hdr=(-H "X-Days: $EXPIRY")
+elif [[ "$EXPIRY" =~ ^([0-9]+)([smhd])$ ]]; then
+  n="${BASH_REMATCH[1]}"; u="${BASH_REMATCH[2]}"
+  case "$u" in
+    s) ttl="$n" ;;
+    m) ttl=$(( n * 60 )) ;;
+    h) ttl=$(( n * 3600 )) ;;
+    d) ttl=$(( n * 86400 )) ;;
+  esac
+  expiry_hdr=(-H "X-TTL: $ttl")
+else
+  echo "bad expiry '$EXPIRY' (use N for days, or N{s,m,h,d}, e.g. 2m)" >&2; exit 1
+fi
 
 TMPZIP=""
 cleanup() { [[ -n "$TMPZIP" ]] && rm -f "$TMPZIP"; }
 trap cleanup EXIT
 
 if [[ -d "$SRC" ]]; then
-  TYPE=zip
-  TOPIC="${2:-$base}"
   TMPZIP="$(mktemp --suffix=.zip)"
   # Zip the folder's *contents* so files sit at the archive root
   # (index.html lands directly under {topic}/).
@@ -67,19 +116,13 @@ PY
   FILE="$TMPZIP"
 else
   FILE="$SRC"
-  TOPIC="${2:-${base%.*}}"
-  case "$SRC" in
-    *.zip)  TYPE=zip  ;;
-    *.htm|*.html) TYPE=html ;;
-    *) echo "unsupported type (use a folder, .zip, or .html): $SRC" >&2; exit 1 ;;
-  esac
 fi
 
-echo "publishing $SRC  topic=$TOPIC  days=$DAYS  type=$TYPE" >&2
+echo "publishing $SRC  topic=$TOPIC  expiry=${EXPIRY:-7(days)}  type=$TYPE" >&2
 extra=()
 [[ "${PREVIEW_NEW:-}" == "1" ]] && extra+=(-H "X-New: 1")
 curl -fsS "${auth[@]}" \
-     -H "X-Topic: ${TOPIC}" -H "X-Days: ${DAYS}" -H "X-Type: ${TYPE}" \
+     -H "X-Topic: ${TOPIC}" "${expiry_hdr[@]}" -H "X-Type: ${TYPE}" \
      "${extra[@]}" \
      --data-binary "@${FILE}" \
      "${API_BASE}/_api/publish"

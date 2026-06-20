@@ -10,14 +10,20 @@ Endpoints
              query/header params:
                topic   (?topic= or X-Topic)   default "preview"
                days    (?days=  or X-Days)     default 7, max 30
+               ttl     (?ttl=   or X-TTL)      expiry in SECONDS (overrides days)
                type    (?type=  or X-Type)     zip|html (auto-detected if absent)
                new     (?new=   or X-New)      1 to force a brand-new URL
+               dry_run (?dry_run= or X-Dry-Run) 1 to predict only, write nothing
              body: raw bytes (zip archive, or html document)
-             Same-name update (default): if a *live* preview already exists with
-             the same topic, its content is replaced in place (the URL stays the
-             same and the expiry resets) — unless new=1, which mints a fresh hash.
-             If a zip has no top-level index.html, a browsable directory-listing
-             index.html is auto-generated for every folder that lacks one.
+             Same-name update (default): if a preview is already live with the
+             same topic AND not past its expiry, its content is replaced in place
+             (the URL stays the same and the expiry resets). A name whose previous
+             preview has expired gets a brand-new hash/URL instead. new=1 always
+             forces a fresh hash. If a zip has no top-level index.html, a browsable
+             directory-listing index.html is auto-generated for every folder that
+             lacks one.
+  GET    /_api/check                       -> dry-run: would this name update or
+             create? params topic, new (query or X-…). Changes nothing.
   GET    /_api/list[?all=1]                -> JSON listing of real previews
   GET    /_api/info/<hash>                 -> one preview's record
   DELETE /_api/preview/<hash>              -> reclaim now (git archive kept)
@@ -29,6 +35,7 @@ With nginx in front (default), nginx serves static files and proxies /_api/.
 """
 from __future__ import annotations
 
+import base64
 import hmac
 import html
 import io
@@ -37,6 +44,7 @@ import mimetypes
 import os
 import secrets
 import shutil
+import struct
 import threading
 import time
 import zipfile
@@ -64,13 +72,69 @@ def _check_key(headers) -> bool:
 
 
 def _new_hash(conn) -> str:
+    """Mint an unguessable, time-unique preview id.
+
+    The id is RANDOM (never derived from the upload's *content*, so re-publishing
+    an expired name always yields a brand-new id) and folds in a high-resolution
+    timestamp so two publishes can never collide even in principle; it is still
+    verified unique against every existing row (any status) before use.
+    """
     while True:
-        h = secrets.token_urlsafe(C.HASH_BYTES)
+        raw = os.urandom(C.HASH_BYTES) + struct.pack(">Q", time.time_ns())
+        h = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
         # keep it clean for URLs / reserved prefixes
         if h[0] in "-_":
             continue
         if not conn.execute("SELECT 1 FROM previews WHERE hash=?", (h,)).fetchone():
             return h
+
+
+def _find_live_match(conn, topic: str, now: int):
+    """The preview a same-name publish would update: still live AND not past its
+    expiry. (The reaper is lazy/hourly, so a row can be past expires_at while
+    still status='live' — such a logically-expired name must NOT be updated.)"""
+    return conn.execute(
+        "SELECT * FROM previews WHERE topic=? AND status='live' AND expires_at > ? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (topic, now),
+    ).fetchone()
+
+
+def _predict_action(conn, topic: str, force_new: bool, now: int) -> dict:
+    """Decide whether a publish of `topic` would update in place or create anew,
+    without changing anything (drives the dry-run / check endpoint)."""
+    match = None if force_new else _find_live_match(conn, topic, now)
+    if match:
+        return {
+            "action": "update",
+            "hash": match["hash"],
+            "url": C.public_url(match["hash"], match["topic"]),
+            "expires_at": match["expires_at"],
+            "expires_at_iso": time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(match["expires_at"])),
+            "seconds_remaining": max(0, match["expires_at"] - now),
+        }
+    prev = conn.execute(
+        "SELECT hash, status, expires_at FROM previews WHERE topic=? "
+        "ORDER BY created_at DESC LIMIT 1",
+        (topic,),
+    ).fetchone()
+    if force_new:
+        reason = "forced new (new=1)"
+    elif prev is None:
+        reason = "no existing preview with this name"
+    elif now >= prev["expires_at"]:
+        reason = "previous preview with this name has expired"
+    else:
+        reason = "previous preview with this name is not live"
+    out = {"action": "create", "reason": reason}
+    if prev is not None:
+        out["previous"] = {
+            "hash": prev["hash"],
+            "status": prev["status"],
+            "expired": now >= prev["expires_at"],
+        }
+    return out
 
 
 def _safe_extract(zf: zipfile.ZipFile, dest: str) -> tuple[int, int]:
@@ -274,7 +338,8 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(urlsplit(self.path).query)
         out = {k: v[0] for k, v in q.items()}
         for hk, pk in (("X-Topic", "topic"), ("X-Days", "days"),
-                       ("X-Type", "type"), ("X-New", "new")):
+                       ("X-Type", "type"), ("X-New", "new"),
+                       ("X-TTL", "ttl"), ("X-Dry-Run", "dry_run")):
             if pk not in out and self.headers.get(hk):
                 out[pk] = self.headers.get(hk)
         return out
@@ -292,6 +357,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(401, "missing or invalid X-API-Key")
         if route == "/list":
             return self._handle_list()
+        if route == "/check":
+            return self._handle_check()
         if route.startswith("/info/"):
             return self._handle_info(route[len("/info/"):])
         return self._err(404, "unknown endpoint")
@@ -386,17 +453,33 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_publish(self):
         params = self._params()
         topic = C.slugify_topic(params.get("topic", "preview"))
-        try:
-            days = int(params.get("days", C.DEFAULT_DAYS))
-        except ValueError:
-            return self._err(400, "days must be an integer")
-        if days < 1 or days > C.MAX_DAYS:
-            return self._err(400, f"days must be between 1 and {C.MAX_DAYS}")
 
         # Same-name-update is the default: re-publishing under a name that is
-        # already live overwrites it in place (stable URL). Opt out with
-        # ?new=1 / X-New: 1 to force a brand-new capability URL.
+        # already live (and not past its expiry) overwrites it in place (stable
+        # URL). Opt out with ?new=1 / X-New: 1 to force a brand-new URL.
         force_new = str(params.get("new", "")).strip().lower() in ("1", "true", "yes")
+        dry_run = str(params.get("dry_run", "")).strip().lower() in ("1", "true", "yes")
+
+        # Expiry: ttl (seconds) takes precedence over days (back-compat). ttl
+        # enables sub-day previews (e.g. a 2-minute doc).
+        ttl_raw = params.get("ttl")
+        if ttl_raw is not None:
+            try:
+                ttl = int(ttl_raw)
+            except ValueError:
+                return self._err(400, "ttl must be an integer number of seconds")
+            if ttl < 1 or ttl > C.MAX_DAYS * 86400:
+                return self._err(400, f"ttl must be between 1 and {C.MAX_DAYS * 86400} seconds")
+            days_store = ttl // 86400
+        else:
+            try:
+                days = int(params.get("days", C.DEFAULT_DAYS))
+            except ValueError:
+                return self._err(400, "days must be an integer")
+            if days < 1 or days > C.MAX_DAYS:
+                return self._err(400, f"days must be between 1 and {C.MAX_DAYS}")
+            ttl = days * 86400
+            days_store = days
 
         body = self._read_body()
         if body is None:
@@ -408,24 +491,34 @@ class Handler(BaseHTTPRequestHandler):
         if ptype not in ("zip", "html"):
             return self._err(400, "type must be zip or html")
 
-        # Decide the target hash: reuse the most recent *live* preview that
+        # Dry-run: report what a real publish WOULD do (update vs create) and
+        # change nothing. (The body was drained above; for a body-less check use
+        # GET /_api/check?topic=...)
+        if dry_run:
+            conn = C.connect()
+            try:
+                pred = _predict_action(conn, topic, force_new, _now())
+            finally:
+                conn.close()
+            return self._json(200, {"ok": True, "dry_run": True, "topic": topic,
+                                    "force_new": force_new, **pred})
+
+        # Decide the target hash: reuse the live, not-yet-expired preview that
         # shares this name (so its URL stays stable and the content is replaced),
-        # otherwise mint a fresh unguessable hash.
+        # otherwise mint a fresh unguessable hash. A name whose previous preview
+        # has expired (even if the reaper has not reclaimed it yet) gets a NEW one.
+        match_now = _now()
         conn = C.connect()
         try:
-            existing = None
-            if not force_new:
-                existing = conn.execute(
-                    "SELECT hash FROM previews WHERE topic=? AND status='live' "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (topic,),
-                ).fetchone()
-            if existing:
-                h = existing["hash"]
+            match = None if force_new else _find_live_match(conn, topic, match_now)
+            if match:
+                h = match["hash"]
                 is_update = True
+                created = match["created_at"]
             else:
                 h = _new_hash(conn)
                 is_update = False
+                created = None  # set to publish time below
         finally:
             conn.close()
 
@@ -474,19 +567,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(500, f"failed to publish: {e}")
 
         now = _now()
-        expires = now + days * 86400
+        expires = now + ttl
+        if not is_update:
+            created = now
         client_ip = self.headers.get("X-Real-IP", self.client_address[0])
 
         conn = C.connect()
         try:
             if is_update:
                 # Keep the original created_at (stable identity); refresh the
-                # rest. archived=0 + archive_name=NULL queues a fresh archive
-                # snapshot for this new version (the old snapshot is kept).
-                row = conn.execute(
-                    "SELECT created_at FROM previews WHERE hash=?", (h,)
-                ).fetchone()
-                created = row["created_at"] if row else now
+                # rest. archived=0 + archive_name=NULL re-queues archiving — the
+                # archive entry is keyed on created_at+hash so it is rewritten in
+                # place (git MODIFIED), not duplicated.
                 conn.execute(
                     """UPDATE previews
                        SET topic=?, updated_at=?, expires_at=?, days=?,
@@ -494,16 +586,15 @@ class Handler(BaseHTTPRequestHandler):
                            archived=0, archive_name=NULL, reclaimed_at=NULL,
                            client_ip=?
                        WHERE hash=?""",
-                    (topic, now, expires, days, size, count, client_ip, h),
+                    (topic, now, expires, days_store, size, count, client_ip, h),
                 )
             else:
-                created = now
                 conn.execute(
                     """INSERT INTO previews
                        (hash, topic, created_at, updated_at, expires_at, days,
                         size_bytes, file_count, status, archived, client_ip)
                        VALUES (?,?,?,?,?,?,?,?, 'live', 0, ?)""",
-                    (h, topic, created, now, expires, days, size, count, client_ip),
+                    (h, topic, created, now, expires, days_store, size, count, client_ip),
                 )
             conn.commit()
         finally:
@@ -512,14 +603,16 @@ class Handler(BaseHTTPRequestHandler):
         meta = {
             "hash": h, "topic": topic,
             "created_at": created, "updated_at": now,
-            "expires_at": expires, "days": days, "size_bytes": size,
-            "file_count": count, "type": ptype, "updated": is_update,
+            "expires_at": expires, "days": days_store, "ttl_seconds": ttl,
+            "size_bytes": size, "file_count": count, "type": ptype,
+            "updated": is_update,
         }
-        # archive in the background (best-effort; no-op while git archiving
-        # disabled). The version timestamp (now) dates the archive snapshot so
-        # each republish is preserved as its own append-only entry.
+        # Archive in the background (best-effort; no-op while git archiving
+        # disabled). Pass the ORIGINAL created_at so the archive entry path is
+        # stable per hash: a same-name update rewrites it (git MODIFIED), a fresh
+        # hash creates a new entry (git NEW).
         threading.Thread(
-            target=self._archive_async, args=(h, topic, now, meta), daemon=True
+            target=self._archive_async, args=(h, topic, created, meta), daemon=True
         ).start()
 
         return self._json(200, {
@@ -528,11 +621,13 @@ class Handler(BaseHTTPRequestHandler):
             "topic": topic,
             "url": C.public_url(h, topic),
             "updated": is_update,
+            "action": "update" if is_update else "create",
             "created_at": created,
             "updated_at": now,
             "expires_at": expires,
             "expires_at_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires)),
-            "days": days,
+            "days": days_store,
+            "ttl_seconds": ttl,
             "size_bytes": size,
             "file_count": count,
             "has_index_html": has_index,
@@ -575,6 +670,21 @@ class Handler(BaseHTTPRequestHandler):
                 conn.close()
         except Exception as e:  # noqa: BLE001
             print(f"[api] archive error for {h}: {e}", flush=True)
+
+    def _handle_check(self):
+        """Dry-run: report whether publishing a given name would update an
+        existing live preview or create a new one — without changing anything."""
+        params = self._params()
+        topic = C.slugify_topic(params.get("topic", "preview"))
+        force_new = str(params.get("new", "")).strip().lower() in ("1", "true", "yes")
+        now = _now()
+        conn = C.connect()
+        try:
+            pred = _predict_action(conn, topic, force_new, now)
+        finally:
+            conn.close()
+        return self._json(200, {"ok": True, "dry_run": True, "topic": topic,
+                                "force_new": force_new, **pred})
 
     def _handle_list(self):
         include_all = self._params().get("all") in ("1", "true", "yes")

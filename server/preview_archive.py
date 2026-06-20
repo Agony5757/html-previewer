@@ -13,13 +13,21 @@ The archive repo (GIT_REPO_DIR, e.g. /var/lib/preview/archive-repo) is a
 *dedicated* repository that is physically SEPARATE from the live content tree
 (LIVE_ROOT, e.g. /var/www/preview/live). Expiry/deletion only ever rmtree paths
 under LIVE_ROOT (see reaper.py / _handle_delete) — they never touch the archive
-repo. Here we only ever copy *into* the repo (new snapshot dirs) and run
-`git add -A` + commit + push, so the working tree only grows: `git status` never
-shows a deletion and the remote never receives one. Because the repo holds the
+repo. Here we only ever copy *into* the repo and run `git add -A` + commit +
+push, so the remote only grows and full history is retained: a reclaim of live
+content never produces a deletion on the remote. Because the repo holds the
 previews/ archive *only* (not the live tree, not the source code), no
 sparse-checkout / partial-tracking is needed — the separation already scopes
-exactly what is versioned. Same-name updates are written as a fresh unique
-snapshot dir, so even re-publishing under one name stays strictly additive.
+exactly what is versioned.
+
+Update vs. new (mirrors the live same-name-update model)
+--------------------------------------------------------
+Each entry path is keyed by the preview's ORIGINAL created_at + hash + topic, so
+it is stable for the life of that hash. An in-place same-name update (same live
+hash) rewrites the same entry -> git records a MODIFIED change; a fresh hash
+(e.g. re-publishing a name whose previous preview has EXPIRED) lands in a new
+entry -> git records a NEW addition. Old versions are never lost — they remain
+in the commit history.
 
 Resilience: a commit is always made locally (fast, offline-safe); the push may
 fail (network) in which case the commit stays local and the reaper retries the
@@ -168,30 +176,27 @@ def archive_preview(h: str, topic: str, created_at: int, meta: dict) -> dict:
         _log("PREVIEW_GIT_REMOTE not set; skipping")
         return out
 
+    # The entry path is keyed by the preview's ORIGINAL created_at + hash + topic,
+    # so it is STABLE for the life of that hash: an in-place same-name update
+    # (same hash) rewrites the same entry => git sees a MODIFIED change, while a
+    # fresh hash (e.g. re-publishing an expired name) lands in a brand-new entry
+    # => git sees a NEW addition. Either way the remote only grows and full
+    # version history is retained in the commit log (append-only history).
     name = archive_name(h, topic, created_at)
     year = time.strftime("%Y", time.localtime(created_at))
     try:
         with _FileLock(_LOCK_PATH):
             _ensure_repo()
-            # Each republish is preserved as its own immutable snapshot: if the
-            # dated name already exists (same-name update on the same day), pick
-            # a unique sibling so the archive stays strictly append-only — we
-            # never overwrite or delete a previously archived version.
-            year_dir = os.path.join(C.GIT_REPO_DIR, "previews", year)
-            base_entry = os.path.join(year_dir, name)
-            entry = base_entry
-            if os.path.exists(entry):
-                stamp = time.strftime("%H%M%S", time.localtime(created_at))
-                entry = f"{base_entry}__{stamp}"
-                n = 2
-                while os.path.exists(entry):
-                    entry = f"{base_entry}__{stamp}-{n}"
-                    n += 1
-            name = os.path.basename(entry)
+            entry = os.path.join(C.GIT_REPO_DIR, "previews", year, name)
             site = os.path.join(entry, "site")
             os.makedirs(entry, exist_ok=True)
+            # Replace site/ wholesale so the commit diff reflects exactly this
+            # version (added/modified/removed files), rather than merging stale
+            # files from a previous version on top of the new one.
+            if os.path.isdir(site):
+                shutil.rmtree(site, ignore_errors=True)
             src = os.path.join(C.LIVE_ROOT, h)
-            shutil.copytree(src, site, dirs_exist_ok=True)
+            shutil.copytree(src, site)
             with open(os.path.join(entry, "metadata.json"), "w", encoding="utf-8") as f:
                 json.dump(meta, f, ensure_ascii=False, indent=2)
 

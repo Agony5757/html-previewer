@@ -18,16 +18,23 @@ https://preview.example.com/{hash}/{topic}/index.html
 - **Unguessable URL** = the only access control (capability URL; no login).
 - **Folders welcome** — publish a whole directory, a `.zip`, or a single `.html`.
 - **Same-name update (default)** — re-publishing under a name (`topic`) that is
-  still live **overwrites it in place and keeps the same URL**, so you can share a
-  link once and keep refreshing the content (expiry resets on each update). The
-  swap is atomic — a malformed re-upload never destroys the previous good version.
-  Pass `?new=1` / `X-New: 1` (or `PREVIEW_NEW=1` in the client) to force a fresh URL.
+  still live **and not past its expiry** overwrites it in place and **keeps the
+  same URL** (expiry resets), so you can share a link once and keep refreshing
+  the content. A name whose previous preview has **expired** instead gets a
+  brand-new URL. The swap is atomic — a malformed re-upload never destroys the
+  previous good version. Pass `?new=1` / `X-New: 1` (or `PREVIEW_NEW=1` in the
+  client) to always force a fresh URL.
+- **Dry-run** — ask whether a publish would *update in place* or *create a new
+  URL* before uploading: `client/preview-publish.sh --dry-run <path>` or
+  `GET /_api/check?topic=…`.
+- **Flexible expiry** — 1–30 **days** (default 7), or sub-day **`ttl`** in
+  seconds for short-lived previews (client accepts `2m`, `36h`, `10d`, …).
 - **Auto directory index** — if an uploaded folder has no top-level `index.html`,
   a clean, browsable **directory listing** is generated for every folder that
   lacks one (dotfiles excluded). Provide your own `index.html` and it is left
   untouched.
-- **Expiry** 1–30 days (default 7). After expiry the live copy is deleted and
-  disk reclaimed; any wrong/expired URL returns a custom **404**.
+- **Expiry** — after expiry the live copy is deleted and disk reclaimed (hourly
+  reaper); any wrong/expired URL returns a custom **404**.
 - **Relative links work** — content is served from a normal directory tree.
 - **Optional auto-archive** of each publish to a Git repo (append-only).
 - **API key** for publishing and for listing the *real* directory of previews.
@@ -85,7 +92,9 @@ Set `PREVIEW_API_KEY` (and optionally `PREVIEW_API_BASE`) in
 client/preview-publish.sh ./site/ my-site 14          # publish a whole folder, 14-day expiry
 client/preview-publish.sh ./report.zip my-report 14   # publish a zip, 14-day expiry
 client/preview-publish.sh ./page.html                 # publish a single html, 7 days
-client/preview-publish.sh ./site/ my-site             # re-run = update in place (same URL)
+client/preview-publish.sh ./site/ my-site 2m          # short-lived: 2-minute expiry (ttl)
+client/preview-publish.sh ./site/ my-site             # re-run while live = update in place (same URL)
+client/preview-publish.sh --dry-run ./site/ my-site   # predict: would update in place, or new URL?
 PREVIEW_NEW=1 client/preview-publish.sh ./site/ my-site   # force a brand-new URL instead
 client/preview-publish.sh --list                      # list live previews
 client/preview-publish.sh --delete <hash>             # reclaim now
@@ -101,7 +110,8 @@ curl -H "X-API-Key: $KEY" -H "X-Topic: my-report" -H "X-Days: 14" \
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/_api/health` | no | liveness |
-| POST | `/_api/publish` | yes | body = raw zip or html; params `topic`,`days`,`type`,`new` (query or `X-…` headers). Same-name (`topic`) re-publishes update the live preview in place unless `new=1`. Folders without `index.html` get an auto-generated directory listing. |
+| POST | `/_api/publish` | yes | body = raw zip or html; params `topic`,`days`,`ttl`,`type`,`new`,`dry_run` (query or `X-…` headers). A live, not-yet-expired same-`topic` preview is updated in place (unless `new=1`); an expired name gets a new URL. `ttl` (seconds) overrides `days`. `dry_run=1` predicts only. |
+| GET | `/_api/check` | yes | dry-run: would publishing `topic` (params `topic`,`new`) update in place or create a new URL? Changes nothing. |
 | GET | `/_api/list[?all=1]` | yes | list real previews |
 | GET | `/_api/info/{hash}` | yes | one preview record |
 | DELETE | `/_api/preview/{hash}` | yes | delete live copy now (git archive kept) |
@@ -129,18 +139,25 @@ and `PREVIEW_GIT_ENABLED=1`, then restart. While disabled, nothing is
 cloned/committed (clean disk). A push failure is non-fatal — the commit stays
 local and the reaper retries.
 
+**Live updates vs. new URLs, mirrored in git.** The entry path is keyed by the
+preview's original `created_at` + hash + topic, so it is stable for the life of
+that hash. An in-place same-name update (same live hash) rewrites the same entry
+→ git records a **MODIFIED** change; a fresh hash (re-publishing a name whose
+previous preview has **expired**, or `new=1`) lands in a new entry → git records
+a **NEW** addition. Old versions are never lost — they remain in the commit
+history.
+
 **Why a local expiry/delete never propagates to the remote.** The archive repo
 (`PREVIEW_GIT_REPO_DIR`, default `/var/lib/preview/archive-repo`) is a *dedicated*
 repository, physically **separate** from the live content tree
 (`PREVIEW_LIVE_ROOT`, default `/var/www/preview/live`). Expiry and manual delete
 only ever remove paths under the live tree — they never touch the archive repo.
 Archiving only ever copies *into* the repo and runs `git add -A` + commit + push,
-so the working tree only grows: `git status` never shows deletions and the remote
-never receives one. A same-name update is written as a **new** unique snapshot
-dir, so even re-publishing one name stays strictly additive (every version is
-kept). Because the repo holds the `previews/` archive *only* (not the live tree,
-not the source code), no sparse-checkout / partial tracking is needed — the
-separation already scopes exactly what is versioned.
+so the remote only grows and full history is retained: a reclaim of live content
+never produces a deletion on the remote. Because the repo holds the `previews/`
+archive *only* (not the live tree, not the source code), no sparse-checkout /
+partial tracking is needed — the separation already scopes exactly what is
+versioned.
 
 ## Operations (system install)
 ```bash
