@@ -17,6 +17,11 @@ https://preview.example.com/{hash}/{topic}/index.html
 ## Features
 - **Unguessable URL** = the only access control (capability URL; no login).
 - **Folders welcome** — publish a whole directory, a `.zip`, or a single `.html`.
+- **Same-name update (default)** — re-publishing under a name (`topic`) that is
+  still live **overwrites it in place and keeps the same URL**, so you can share a
+  link once and keep refreshing the content (expiry resets on each update). The
+  swap is atomic — a malformed re-upload never destroys the previous good version.
+  Pass `?new=1` / `X-New: 1` (or `PREVIEW_NEW=1` in the client) to force a fresh URL.
 - **Auto directory index** — if an uploaded folder has no top-level `index.html`,
   a clean, browsable **directory listing** is generated for every folder that
   lacks one (dotfiles excluded). Provide your own `index.html` and it is left
@@ -80,6 +85,8 @@ Set `PREVIEW_API_KEY` (and optionally `PREVIEW_API_BASE`) in
 client/preview-publish.sh ./site/ my-site 14          # publish a whole folder, 14-day expiry
 client/preview-publish.sh ./report.zip my-report 14   # publish a zip, 14-day expiry
 client/preview-publish.sh ./page.html                 # publish a single html, 7 days
+client/preview-publish.sh ./site/ my-site             # re-run = update in place (same URL)
+PREVIEW_NEW=1 client/preview-publish.sh ./site/ my-site   # force a brand-new URL instead
 client/preview-publish.sh --list                      # list live previews
 client/preview-publish.sh --delete <hash>             # reclaim now
 ```
@@ -94,7 +101,7 @@ curl -H "X-API-Key: $KEY" -H "X-Topic: my-report" -H "X-Days: 14" \
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/_api/health` | no | liveness |
-| POST | `/_api/publish` | yes | body = raw zip or html; params `topic`,`days`,`type` (query or `X-…` headers). Folders without `index.html` get an auto-generated directory listing. |
+| POST | `/_api/publish` | yes | body = raw zip or html; params `topic`,`days`,`type`,`new` (query or `X-…` headers). Same-name (`topic`) re-publishes update the live preview in place unless `new=1`. Folders without `index.html` get an auto-generated directory listing. |
 | GET | `/_api/list[?all=1]` | yes | list real previews |
 | GET | `/_api/info/{hash}` | yes | one preview record |
 | DELETE | `/_api/preview/{hash}` | yes | delete live copy now (git archive kept) |
@@ -121,6 +128,19 @@ Enable by setting `PREVIEW_GIT_*` in the config (see `deploy/preview.env.example
 and `PREVIEW_GIT_ENABLED=1`, then restart. While disabled, nothing is
 cloned/committed (clean disk). A push failure is non-fatal — the commit stays
 local and the reaper retries.
+
+**Why a local expiry/delete never propagates to the remote.** The archive repo
+(`PREVIEW_GIT_REPO_DIR`, default `/var/lib/preview/archive-repo`) is a *dedicated*
+repository, physically **separate** from the live content tree
+(`PREVIEW_LIVE_ROOT`, default `/var/www/preview/live`). Expiry and manual delete
+only ever remove paths under the live tree — they never touch the archive repo.
+Archiving only ever copies *into* the repo and runs `git add -A` + commit + push,
+so the working tree only grows: `git status` never shows deletions and the remote
+never receives one. A same-name update is written as a **new** unique snapshot
+dir, so even re-publishing one name stays strictly additive (every version is
+kept). Because the repo holds the `previews/` archive *only* (not the live tree,
+not the source code), no sparse-checkout / partial tracking is needed — the
+separation already scopes exactly what is versioned.
 
 ## Operations (system install)
 ```bash

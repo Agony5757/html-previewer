@@ -93,6 +93,7 @@ def init_db() -> None:
                 hash         TEXT PRIMARY KEY,
                 topic        TEXT NOT NULL,
                 created_at   INTEGER NOT NULL,
+                updated_at   INTEGER,                        -- last (re)publish time
                 expires_at   INTEGER NOT NULL,
                 days         INTEGER NOT NULL,
                 size_bytes   INTEGER NOT NULL DEFAULT 0,
@@ -105,9 +106,18 @@ def init_db() -> None:
             )
             """
         )
+        _migrate(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive, idempotent schema migrations for already-deployed databases."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(previews)")}
+    if "updated_at" not in cols:
+        conn.execute("ALTER TABLE previews ADD COLUMN updated_at INTEGER")
+        conn.execute("UPDATE previews SET updated_at=created_at WHERE updated_at IS NULL")
 
 
 def public_url(h: str, topic: str) -> str:

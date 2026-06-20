@@ -4,8 +4,12 @@
 # Usage:
 #   preview-publish.sh <path> [topic] [days]
 #     <path>  : a folder (multi-file site), a .zip, or a single .html file
-#     topic   : URL segment (default: derived from the file/folder name)
+#     topic   : URL segment / name (default: derived from the file/folder name)
 #     days    : expiry in days, 1..30 (default: 7)
+#
+#   Same-name update (default): re-publishing under a name (topic) that is still
+#   live overwrites it in place, keeping the SAME URL. Set PREVIEW_NEW=1 to force
+#   a brand-new capability URL instead.
 #
 #   preview-publish.sh --list            # list your live previews
 #   preview-publish.sh --list-all        # include expired/deleted
@@ -14,6 +18,7 @@
 # Config (env or ~/.config/preview/config):
 #   PREVIEW_API_BASE   default https://preview.example.com
 #   PREVIEW_API_KEY    required
+#   PREVIEW_NEW=1      force a new URL instead of same-name update (optional)
 set -euo pipefail
 
 CFG="${HOME}/.config/preview/config"
@@ -71,8 +76,11 @@ else
 fi
 
 echo "publishing $SRC  topic=$TOPIC  days=$DAYS  type=$TYPE" >&2
+extra=()
+[[ "${PREVIEW_NEW:-}" == "1" ]] && extra+=(-H "X-New: 1")
 curl -fsS "${auth[@]}" \
      -H "X-Topic: ${TOPIC}" -H "X-Days: ${DAYS}" -H "X-Type: ${TYPE}" \
+     "${extra[@]}" \
      --data-binary "@${FILE}" \
      "${API_BASE}/_api/publish"
 echo

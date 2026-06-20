@@ -11,7 +11,11 @@ Endpoints
                topic   (?topic= or X-Topic)   default "preview"
                days    (?days=  or X-Days)     default 7, max 30
                type    (?type=  or X-Type)     zip|html (auto-detected if absent)
+               new     (?new=   or X-New)      1 to force a brand-new URL
              body: raw bytes (zip archive, or html document)
+             Same-name update (default): if a *live* preview already exists with
+             the same topic, its content is replaced in place (the URL stays the
+             same and the expiry resets) — unless new=1, which mints a fresh hash.
              If a zip has no top-level index.html, a browsable directory-listing
              index.html is auto-generated for every folder that lacks one.
   GET    /_api/list[?all=1]                -> JSON listing of real previews
@@ -269,7 +273,8 @@ class Handler(BaseHTTPRequestHandler):
     def _params(self) -> dict:
         q = parse_qs(urlsplit(self.path).query)
         out = {k: v[0] for k, v in q.items()}
-        for hk, pk in (("X-Topic", "topic"), ("X-Days", "days"), ("X-Type", "type")):
+        for hk, pk in (("X-Topic", "topic"), ("X-Days", "days"),
+                       ("X-Type", "type"), ("X-New", "new")):
             if pk not in out and self.headers.get(hk):
                 out[pk] = self.headers.get(hk)
         return out
@@ -388,6 +393,11 @@ class Handler(BaseHTTPRequestHandler):
         if days < 1 or days > C.MAX_DAYS:
             return self._err(400, f"days must be between 1 and {C.MAX_DAYS}")
 
+        # Same-name-update is the default: re-publishing under a name that is
+        # already live overwrites it in place (stable URL). Opt out with
+        # ?new=1 / X-New: 1 to force a brand-new capability URL.
+        force_new = str(params.get("new", "")).strip().lower() in ("1", "true", "yes")
+
         body = self._read_body()
         if body is None:
             return
@@ -395,69 +405,121 @@ class Handler(BaseHTTPRequestHandler):
         ptype = params.get("type")
         if not ptype:
             ptype = "zip" if body[:4] == ZIP_MAGIC else "html"
+        if ptype not in ("zip", "html"):
+            return self._err(400, "type must be zip or html")
 
+        # Decide the target hash: reuse the most recent *live* preview that
+        # shares this name (so its URL stays stable and the content is replaced),
+        # otherwise mint a fresh unguessable hash.
         conn = C.connect()
         try:
-            h = _new_hash(conn)
+            existing = None
+            if not force_new:
+                existing = conn.execute(
+                    "SELECT hash FROM previews WHERE topic=? AND status='live' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (topic,),
+                ).fetchone()
+            if existing:
+                h = existing["hash"]
+                is_update = True
+            else:
+                h = _new_hash(conn)
+                is_update = False
         finally:
             conn.close()
 
-        hash_dir = os.path.join(C.LIVE_ROOT, h)
-        topic_dir = os.path.join(hash_dir, topic)
-        os.makedirs(topic_dir, exist_ok=True)
+        # Build the new tree in a private staging dir on the SAME filesystem as
+        # LIVE_ROOT, then swap it into place with an atomic rename. This means a
+        # malformed re-upload can never destroy the previous good version, and a
+        # reader never sees a half-written tree. The staging dir is hidden (dot
+        # prefix) so it is never served (nginx denies dotpaths; the app skips them).
+        staging_parent = os.path.join(C.LIVE_ROOT, ".staging")
+        os.makedirs(staging_parent, exist_ok=True)
+        stage_root = os.path.join(staging_parent, f"{h}.{secrets.token_hex(6)}")
+        stage_topic_dir = os.path.join(stage_root, topic)
+        os.makedirs(stage_topic_dir, exist_ok=True)
 
         try:
             if ptype == "zip":
                 if body[:4] != ZIP_MAGIC:
                     raise ValueError("body is not a zip archive")
                 with zipfile.ZipFile(io.BytesIO(body)) as zf:
-                    _safe_extract(zf, topic_dir)
-                _flatten_single_wrapper(topic_dir)
-            elif ptype == "html":
-                with open(os.path.join(topic_dir, "index.html"), "wb") as f:
+                    _safe_extract(zf, stage_topic_dir)
+                _flatten_single_wrapper(stage_topic_dir)
+            else:  # html
+                with open(os.path.join(stage_topic_dir, "index.html"), "wb") as f:
                     f.write(body)
-            else:
-                raise ValueError("type must be zip or html")
         except Exception as e:  # noqa: BLE001
-            shutil.rmtree(hash_dir, ignore_errors=True)
+            shutil.rmtree(stage_root, ignore_errors=True)
             return self._err(400, f"failed to process upload: {e}")
 
         # No landing page? Synthesize a browsable directory listing so the
         # folder's contents are reachable via links.
         auto_index = False
-        if not os.path.exists(os.path.join(topic_dir, "index.html")):
+        if not os.path.exists(os.path.join(stage_topic_dir, "index.html")):
             try:
-                auto_index = _generate_autoindex(topic_dir, topic) > 0
+                auto_index = _generate_autoindex(stage_topic_dir, topic) > 0
             except Exception as e:  # noqa: BLE001
                 print(f"[api] autoindex error for {h}: {e}", flush=True)
 
-        has_index = os.path.exists(os.path.join(topic_dir, "index.html"))
-        count, size = _dir_stats(hash_dir)
-        created = _now()
-        expires = created + days * 86400
+        has_index = os.path.exists(os.path.join(stage_topic_dir, "index.html"))
+        count, size = _dir_stats(stage_root)
+
+        final_dir = os.path.join(C.LIVE_ROOT, h)
+        try:
+            self._swap_into_place(stage_root, final_dir, staging_parent)
+        except Exception as e:  # noqa: BLE001
+            shutil.rmtree(stage_root, ignore_errors=True)
+            return self._err(500, f"failed to publish: {e}")
+
+        now = _now()
+        expires = now + days * 86400
+        client_ip = self.headers.get("X-Real-IP", self.client_address[0])
 
         conn = C.connect()
         try:
-            conn.execute(
-                """INSERT INTO previews
-                   (hash, topic, created_at, expires_at, days, size_bytes,
-                    file_count, status, archived, client_ip)
-                   VALUES (?,?,?,?,?,?,?, 'live', 0, ?)""",
-                (h, topic, created, expires, days, size, count,
-                 self.headers.get("X-Real-IP", self.client_address[0])),
-            )
+            if is_update:
+                # Keep the original created_at (stable identity); refresh the
+                # rest. archived=0 + archive_name=NULL queues a fresh archive
+                # snapshot for this new version (the old snapshot is kept).
+                row = conn.execute(
+                    "SELECT created_at FROM previews WHERE hash=?", (h,)
+                ).fetchone()
+                created = row["created_at"] if row else now
+                conn.execute(
+                    """UPDATE previews
+                       SET topic=?, updated_at=?, expires_at=?, days=?,
+                           size_bytes=?, file_count=?, status='live',
+                           archived=0, archive_name=NULL, reclaimed_at=NULL,
+                           client_ip=?
+                       WHERE hash=?""",
+                    (topic, now, expires, days, size, count, client_ip, h),
+                )
+            else:
+                created = now
+                conn.execute(
+                    """INSERT INTO previews
+                       (hash, topic, created_at, updated_at, expires_at, days,
+                        size_bytes, file_count, status, archived, client_ip)
+                       VALUES (?,?,?,?,?,?,?,?, 'live', 0, ?)""",
+                    (h, topic, created, now, expires, days, size, count, client_ip),
+                )
             conn.commit()
         finally:
             conn.close()
 
         meta = {
-            "hash": h, "topic": topic, "created_at": created,
+            "hash": h, "topic": topic,
+            "created_at": created, "updated_at": now,
             "expires_at": expires, "days": days, "size_bytes": size,
-            "file_count": count, "type": ptype,
+            "file_count": count, "type": ptype, "updated": is_update,
         }
-        # archive in the background (best-effort; no-op while git archiving disabled)
+        # archive in the background (best-effort; no-op while git archiving
+        # disabled). The version timestamp (now) dates the archive snapshot so
+        # each republish is preserved as its own append-only entry.
         threading.Thread(
-            target=self._archive_async, args=(h, topic, created, meta), daemon=True
+            target=self._archive_async, args=(h, topic, now, meta), daemon=True
         ).start()
 
         return self._json(200, {
@@ -465,6 +527,9 @@ class Handler(BaseHTTPRequestHandler):
             "hash": h,
             "topic": topic,
             "url": C.public_url(h, topic),
+            "updated": is_update,
+            "created_at": created,
+            "updated_at": now,
             "expires_at": expires,
             "expires_at_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expires)),
             "days": days,
@@ -474,6 +539,27 @@ class Handler(BaseHTTPRequestHandler):
             "auto_index": auto_index,
             "archive_enabled": C.GIT_ENABLED,
         })
+
+    @staticmethod
+    def _swap_into_place(stage_root: str, final_dir: str, trash_parent: str) -> None:
+        """Atomically replace final_dir with the freshly-built stage_root.
+
+        Both live on the same filesystem (under LIVE_ROOT) so os.rename is
+        atomic. Any previous tree is moved aside first and removed only after
+        the swap succeeds; on failure it is restored.
+        """
+        backup = None
+        if os.path.lexists(final_dir):
+            backup = os.path.join(trash_parent, f"old-{secrets.token_hex(6)}")
+            os.rename(final_dir, backup)
+        try:
+            os.rename(stage_root, final_dir)
+        except Exception:
+            if backup is not None and not os.path.lexists(final_dir):
+                os.rename(backup, final_dir)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
 
     @staticmethod
     def _archive_async(h, topic, created, meta):

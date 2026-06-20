@@ -5,8 +5,21 @@ concern: when PREVIEW_GIT_ENABLED != 1 we do nothing (and create no local repo,
 so disk stays clean until Gitea is wired up). When enabled, each publish copies
 the served tree into a local working clone under
   previews/<YYYY>/<YYYY-MM-DD>__<hash>__<topic>/{metadata.json, site/...}
-then `git add` + `git commit` + `git push` to the Gitea remote. The repo is an
-append-only archive: nothing is ever deleted there.
+then `git add` + `git commit` + `git push` to the Gitea remote.
+
+Append-only guarantee (why a local delete never reaches the remote)
+-------------------------------------------------------------------
+The archive repo (GIT_REPO_DIR, e.g. /var/lib/preview/archive-repo) is a
+*dedicated* repository that is physically SEPARATE from the live content tree
+(LIVE_ROOT, e.g. /var/www/preview/live). Expiry/deletion only ever rmtree paths
+under LIVE_ROOT (see reaper.py / _handle_delete) — they never touch the archive
+repo. Here we only ever copy *into* the repo (new snapshot dirs) and run
+`git add -A` + commit + push, so the working tree only grows: `git status` never
+shows a deletion and the remote never receives one. Because the repo holds the
+previews/ archive *only* (not the live tree, not the source code), no
+sparse-checkout / partial-tracking is needed — the separation already scopes
+exactly what is versioned. Same-name updates are written as a fresh unique
+snapshot dir, so even re-publishing under one name stays strictly additive.
 
 Resilience: a commit is always made locally (fast, offline-safe); the push may
 fail (network) in which case the commit stays local and the reaper retries the
@@ -160,7 +173,21 @@ def archive_preview(h: str, topic: str, created_at: int, meta: dict) -> dict:
     try:
         with _FileLock(_LOCK_PATH):
             _ensure_repo()
-            entry = os.path.join(C.GIT_REPO_DIR, "previews", year, name)
+            # Each republish is preserved as its own immutable snapshot: if the
+            # dated name already exists (same-name update on the same day), pick
+            # a unique sibling so the archive stays strictly append-only — we
+            # never overwrite or delete a previously archived version.
+            year_dir = os.path.join(C.GIT_REPO_DIR, "previews", year)
+            base_entry = os.path.join(year_dir, name)
+            entry = base_entry
+            if os.path.exists(entry):
+                stamp = time.strftime("%H%M%S", time.localtime(created_at))
+                entry = f"{base_entry}__{stamp}"
+                n = 2
+                while os.path.exists(entry):
+                    entry = f"{base_entry}__{stamp}-{n}"
+                    n += 1
+            name = os.path.basename(entry)
             site = os.path.join(entry, "site")
             os.makedirs(entry, exist_ok=True)
             src = os.path.join(C.LIVE_ROOT, h)
@@ -174,7 +201,8 @@ def archive_preview(h: str, topic: str, created_at: int, meta: dict) -> dict:
                 _log(f"no changes to commit for {h}")
             else:
                 exp = time.strftime("%Y-%m-%d", time.localtime(meta.get("expires_at", created_at)))
-                _git(["commit", "-m", f"archive {topic} {h} (expires {exp})"])
+                verb = "update" if meta.get("updated") else "archive"
+                _git(["commit", "-m", f"{verb} {topic} {h} (expires {exp})"])
                 out["committed"] = True
                 out["name"] = name
             out["pushed"] = _push()
