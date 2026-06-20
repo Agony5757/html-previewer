@@ -26,6 +26,13 @@ Endpoints
              create? params topic, new (query or X-…). Changes nothing.
   GET    /_api/list[?all=1]                -> JSON listing of real previews
   GET    /_api/info/<hash>                 -> one preview's record
+  POST   /_api/expiry/<hash>               -> admin expiry control (params:
+             action=extend|expire|renew (query or X-Action), days (query/X-Days).
+             extend: prolong a live preview by `days` (default 30) on top of its
+             current expiry. expire: reclaim it now and mark expired (archive
+             kept). renew: revive an expired one for `days` (default 7) from now,
+             restoring the content from the git archive if it was already
+             reclaimed (409 if it was never archived).
   DELETE /_api/preview/<hash>              -> reclaim now (git archive kept)
 
 When PREVIEW_SERVE_STATIC=1 the process also serves the published preview trees
@@ -62,6 +69,21 @@ ZIP_MAGIC = b"PK\x03\x04"
 # ---------------------------------------------------------------------------
 def _now() -> int:
     return int(time.time())
+
+
+def _parse_days(raw, default: int):
+    """Parse a positive integer day count.
+
+    Returns `default` when the value is absent/blank, the parsed int when it is a
+    valid positive integer, or None when it is present but invalid (caller errors).
+    """
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        d = int(str(raw).strip())
+    except ValueError:
+        return None
+    return d if d >= 1 else None
 
 
 def _check_key(headers) -> bool:
@@ -339,7 +361,8 @@ class Handler(BaseHTTPRequestHandler):
         out = {k: v[0] for k, v in q.items()}
         for hk, pk in (("X-Topic", "topic"), ("X-Days", "days"),
                        ("X-Type", "type"), ("X-New", "new"),
-                       ("X-TTL", "ttl"), ("X-Dry-Run", "dry_run")):
+                       ("X-TTL", "ttl"), ("X-Dry-Run", "dry_run"),
+                       ("X-Action", "action")):
             if pk not in out and self.headers.get(hk):
                 out[pk] = self.headers.get(hk)
         return out
@@ -384,6 +407,8 @@ class Handler(BaseHTTPRequestHandler):
         route = self._route(self.path)
         if route == "/publish":
             return self._handle_publish()
+        if route.startswith("/expiry/"):
+            return self._handle_expiry(route[len("/expiry/"):])
         return self._err(404, "unknown endpoint")
 
     # ---- handlers ----
@@ -731,6 +756,84 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
         return self._json(200, {"ok": True, "hash": h, "status": "deleted",
                                 "note": "live copy removed; git archive (if any) kept"})
+
+    def _handle_expiry(self, h: str):
+        """Admin expiry control for one preview (drives the admin homepage buttons).
+
+        action=extend  prolong a live preview's expiry by `days` (default 30),
+                       added on top of its current expiry so time is never lost.
+        action=expire  expire it right now: reclaim the live copy immediately
+                       (don't wait for the hourly reaper) and mark it 'expired'.
+                       The git archive (if any) is kept, so it can be renewed.
+        action=renew   revive an expired/inactive preview for `days` (default 7),
+                       a fresh window from now. If the live copy was already
+                       reclaimed it is restored from the git archive; if it was
+                       never archived there is nothing to restore -> 409.
+        """
+        if not h or "/" in h or ".." in h:
+            return self._err(400, "bad hash")
+        params = self._params()
+        action = str(params.get("action", "")).strip().lower()
+        if action not in ("extend", "expire", "renew"):
+            return self._err(400, "action must be extend, expire, or renew")
+
+        now = _now()
+        conn = C.connect()
+        try:
+            row = conn.execute("SELECT * FROM previews WHERE hash=?", (h,)).fetchone()
+            if not row:
+                return self._err(404, "no such preview")
+
+            if action == "expire":
+                shutil.rmtree(os.path.join(C.LIVE_ROOT, h), ignore_errors=True)
+                conn.execute(
+                    "UPDATE previews SET status='expired', expires_at=?, "
+                    "reclaimed_at=?, updated_at=? WHERE hash=?",
+                    (now, now, now, h),
+                )
+                conn.commit()
+                new_row = conn.execute(
+                    "SELECT * FROM previews WHERE hash=?", (h,)).fetchone()
+                return self._json(200, {"ok": True, "action": "expire",
+                                        "preview": C.row_to_dict(new_row)})
+
+            # extend / renew both end with the preview live and a future expiry.
+            default_days = 30 if action == "extend" else 7
+            days = _parse_days(params.get("days"), default_days)
+            if days is None:
+                return self._err(400, "days must be a positive integer")
+            if action == "extend":
+                # Add on top of the current expiry (never shorten); fall back to
+                # `now` if it had already slipped past expiry.
+                new_expires = max(int(row["expires_at"]), now) + days * 86400
+            else:  # renew: a fresh window from now
+                new_expires = now + days * 86400
+            days_store = max(1, (new_expires - now + 86399) // 86400)
+
+            # Make sure the served content exists; restore it from the append-only
+            # git archive if the reaper already reclaimed the live tree.
+            live_dir = os.path.join(C.LIVE_ROOT, h)
+            if not os.path.isdir(live_dir):
+                restored = preview_archive.restore_from_archive(
+                    h, row["topic"], row["created_at"], row["archive_name"])
+                if not restored:
+                    return self._err(
+                        409,
+                        "content was already reclaimed and is not in the git "
+                        "archive; re-publish it instead of renewing")
+
+            conn.execute(
+                "UPDATE previews SET status='live', expires_at=?, days=?, "
+                "reclaimed_at=NULL, updated_at=? WHERE hash=?",
+                (new_expires, days_store, now, h),
+            )
+            conn.commit()
+            new_row = conn.execute(
+                "SELECT * FROM previews WHERE hash=?", (h,)).fetchone()
+            return self._json(200, {"ok": True, "action": action,
+                                    "preview": C.row_to_dict(new_row)})
+        finally:
+            conn.close()
 
 
 def main():

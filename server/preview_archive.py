@@ -225,6 +225,38 @@ def archive_preview(h: str, topic: str, created_at: int, meta: dict) -> dict:
     return out
 
 
+def restore_from_archive(h: str, topic: str, created_at: int,
+                         stored_name: str | None = None) -> bool:
+    """Copy a reclaimed preview's content back into LIVE_ROOT from the archive.
+
+    The admin 'renew' action calls this when the live tree was already reclaimed
+    by the reaper (or an explicit expire/delete): the append-only archive retains
+    the full snapshot under previews/<year>/<name>/site/, so we copy it back to
+    LIVE_ROOT/<hash>/ (which restores the served /<hash>/<topic>/ tree). Returns
+    True on success (including when the live copy is already present), False when
+    archiving is disabled or the archived entry is missing — nothing to restore.
+    """
+    if not C.GIT_ENABLED:
+        return False
+    dest = os.path.join(C.LIVE_ROOT, h)
+    name = stored_name or archive_name(h, topic, created_at)
+    year = time.strftime("%Y", time.localtime(created_at))
+    site = os.path.join(C.GIT_REPO_DIR, "previews", year, name, "site")
+    try:
+        with _FileLock(_LOCK_PATH):
+            if os.path.isdir(dest):
+                return True
+            if not os.path.isdir(site):
+                return False
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copytree(site, dest)
+        _log(f"restored {h} from archive ({year}/{name})")
+        return True
+    except Exception as e:  # noqa: BLE001
+        _log(f"restore error for {h}: {e}")
+        return False
+
+
 def flush_pending() -> int:
     """Retry pushing any locally-committed-but-unpushed archives.
 

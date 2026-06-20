@@ -112,7 +112,10 @@ After rotating, update the client too: set the new `PREVIEW_API_KEY` in
 The site root (e.g. `https://preview.example.com/`) serves a small **admin
 dashboard**. Paste the API key and it lists your **active** and **expired /
 inactive** preview pages (name, link, created/expires + time remaining, size,
-files, archived, status), with a 中/EN language toggle. The key is the admin
+files, archived, status), with a 中/EN language toggle. Each row has one-click
+expiry controls: **Extend 30d** prolongs a live preview, **Expire now** reclaims it
+immediately, and **Renew 7d** revives an expired one (restored from the git archive
+if its content was already reclaimed). The key is the admin
 credential and is kept only in that browser tab (`sessionStorage`); use **Forget**
 to clear it. The dashboard reveals nothing without a valid key.
 
@@ -145,6 +148,7 @@ curl -H "X-API-Key: $KEY" -H "X-Topic: my-report" -H "X-Days: 14" \
 | GET | `/_api/check` | yes | dry-run: would publishing `topic` (params `topic`,`new`) update in place or create a new URL? Changes nothing. |
 | GET | `/_api/list[?all=1]` | yes | list real previews |
 | GET | `/_api/info/{hash}` | yes | one preview record |
+| POST | `/_api/expiry/{hash}` | yes | admin expiry control; param `action` = `extend` (prolong a live preview by `days`, default 30), `expire` (reclaim now + mark expired; archive kept), or `renew` (revive an expired one for `days`, default 7, restoring from the git archive if already reclaimed). `days` via query or `X-Days`. |
 | DELETE | `/_api/preview/{hash}` | yes | delete live copy now (git archive kept) |
 
 ## Architecture

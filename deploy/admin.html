@@ -52,6 +52,9 @@ td a:hover { text-decoration:underline; }
 .yes { color:#7ee787; } .no { color:#5c636e; }
 .empty { color:#7a8290; padding:14px; font-size:13px; }
 .copy { font-size:11px; padding:2px 7px; margin-left:6px; }
+button.act { font-size:12px; padding:4px 9px; margin:2px 3px 2px 0; }
+button.act.danger:hover { border-color:#ff6b6b; color:#ff8787; }
+td.actions { white-space:nowrap; }
 footer { color:#5c636e; font-size:12px; margin-top:30px; text-align:center; }
 @media (max-width:640px){ th.hide, td.hide { display:none; } }
 </style>
@@ -102,8 +105,11 @@ const I18N = {
     invalid:"Invalid token or request failed.",
     activeL:"Active", expiredL:"Expired", activeH:"Active", expiredH:"Expired / inactive",
     cName:"Name", cLink:"Link", cCreated:"Created", cExpires:"Expires",
-    cSize:"Size", cFiles:"Files", cArch:"Archived", cStatus:"Status",
+    cSize:"Size", cFiles:"Files", cArch:"Archived", cStatus:"Status", cActions:"Actions",
     open:"open", copy:"copy", copied:"copied", none:"(none)",
+    extend:"Extend 30d", expire:"Expire now", renew:"Renew 7d",
+    confirmExpire:"Expire this preview now? Its live copy is reclaimed immediately (kept in the git archive if enabled).",
+    actionFail:"Action failed",
     updated:"updated", left:"left", expiredW:"expired",
     pending:"expired (awaiting reclaim)", deleted:"deleted",
     foot:"The token is the sole admin credential — keep it safe.",
@@ -116,8 +122,11 @@ const I18N = {
     invalid:"令牌无效或请求失败。",
     activeL:"在线", expiredL:"已过期", activeH:"在线页面", expiredH:"已过期 / 失效",
     cName:"名称", cLink:"链接", cCreated:"创建时间", cExpires:"过期时间",
-    cSize:"大小", cFiles:"文件数", cArch:"已归档", cStatus:"状态",
+    cSize:"大小", cFiles:"文件数", cArch:"已归档", cStatus:"状态", cActions:"操作",
     open:"打开", copy:"复制", copied:"已复制", none:"（无）",
+    extend:"延期30天", expire:"立即过期", renew:"续期7天",
+    confirmExpire:"立即过期该预览？在线副本会被立刻回收（若已启用 Git 归档则保留在归档中）。",
+    actionFail:"操作失败",
     updated:"更新于", left:"剩余", expiredW:"已过期",
     pending:"已过期（待回收）", deleted:"已删除",
     foot:"令牌是唯一的管理凭证，请妥善保存。",
@@ -194,6 +203,7 @@ function renderTable(items, isActive) {
     <th class="hide">${t("cFiles")}</th>
     <th>${t("cArch")}</th>
     ${isActive ? "" : `<th>${t("cStatus")}</th>`}
+    <th>${t("cActions")}</th>
   </tr>`;
   const rows = items.map(p => {
     const link = isActive
@@ -204,6 +214,10 @@ function renderTable(items, isActive) {
       ? `${fmtTime(p.expires_at)}<br><span class="muted">${fmtRemaining(p.seconds_remaining)}</span>`
       : `${fmtTime(p.expires_at)}`;
     const arch = p.archived ? `<span class="yes">✓</span>` : `<span class="no">–</span>`;
+    const actions = isActive
+      ? `<button class="ghost act" data-act="extend" data-hash="${esc(p.hash)}">${t("extend")}</button>
+         <button class="ghost act danger" data-act="expire" data-hash="${esc(p.hash)}">${t("expire")}</button>`
+      : `<button class="ghost act" data-act="renew" data-hash="${esc(p.hash)}">${t("renew")}</button>`;
     return `<tr>
       <td class="name">${esc(p.topic)}</td>
       <td>${link}</td>
@@ -213,6 +227,7 @@ function renderTable(items, isActive) {
       <td class="hide">${esc(p.file_count)}</td>
       <td>${arch}</td>
       ${isActive ? "" : `<td>${statusBadge(p)}</td>`}
+      <td class="actions">${actions}</td>
     </tr>`;
   }).join("");
   return `<table>${head}${rows}</table>`;
@@ -251,7 +266,27 @@ async function load() {
   }
 }
 
+async function doAction(hash, act) {
+  if (!hash || !act) return;
+  const token = ($("token").value || sessionStorage.getItem(TOKEN_KEY) || "").trim();
+  if (!token) return;
+  if (act === "expire" && !confirm(t("confirmExpire"))) return;
+  const days = act === "extend" ? 30 : (act === "renew" ? 7 : 0);
+  try {
+    let url = `/_api/expiry/${encodeURIComponent(hash)}?action=${encodeURIComponent(act)}`;
+    if (days) url += `&days=${days}`;
+    const r = await fetch(url, { method: "POST", headers: { "X-API-Key": token } });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.ok) throw new Error((data && data.error) || r.status);
+    await load();
+  } catch (e) {
+    alert(`${t("actionFail")}: ${e && e.message ? e.message : e}`);
+  }
+}
+
 document.addEventListener("click", (e) => {
+  const a = e.target.closest("[data-act]");
+  if (a) { doAction(a.dataset.hash, a.dataset.act); return; }
   const b = e.target.closest(".copy");
   if (b) {
     navigator.clipboard?.writeText(b.dataset.url);
