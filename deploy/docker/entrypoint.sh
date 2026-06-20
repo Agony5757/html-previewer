@@ -6,6 +6,9 @@ set -e
 : "${PREVIEW_STATE_DIR:=/data/state}"
 mkdir -p "$PREVIEW_STATE_DIR" "${PREVIEW_LIVE_ROOT:=/data/live}"
 
+# Install/refresh the admin homepage served at / (LIVE_ROOT/index.html).
+cp /app/admin.html "$PREVIEW_LIVE_ROOT/index.html" 2>/dev/null || true
+
 KEY_FILE="$PREVIEW_STATE_DIR/api_key"
 if [ -z "${PREVIEW_API_KEY:-}" ]; then
   if [ -f "$KEY_FILE" ]; then

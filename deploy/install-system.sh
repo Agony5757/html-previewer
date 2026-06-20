@@ -57,6 +57,9 @@ install -m 644 "$SRC/server/reaper.py"          "$APP/reaper.py"
 echo "==> 404 page"
 install -m 644 "$SRC/deploy/__notfound.html" "$WWW/static/__notfound.html"
 
+echo "==> admin homepage (served at /)"
+install -m 644 "$SRC/deploy/admin.html" "$WWW/live/index.html"
+
 echo "==> config $ETC/preview.env"
 if [[ -f "$ETC/preview.env" ]]; then
   echo "    keeping existing preview.env (API key preserved)"

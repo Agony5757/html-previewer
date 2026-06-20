@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta http-equiv="Cache-Control" content="no-store">
+<title>Preview Admin</title>
+<style>
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+  Roboto, Helvetica, Arial, sans-serif; background:#0b0d10; color:#e6e8eb; }
+main { max-width: 1040px; margin: 0 auto; padding: 32px 18px 64px; }
+header { display:flex; align-items:center; gap:12px; margin-bottom:6px; }
+h1 { font-size: 20px; font-weight: 700; margin: 0; flex:1; }
+.sub { color:#7a8290; font-size:13px; margin:0 0 22px; }
+button { font: inherit; cursor:pointer; border:1px solid #2a323b; background:#161a1f;
+  color:#e6e8eb; padding:8px 14px; border-radius:8px; }
+button:hover { border-color:#3a82f6; color:#9cc4ff; }
+button.ghost { background:transparent; padding:6px 10px; font-size:13px; }
+.login { display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+  background:#11151a; border:1px solid #1e242b; border-radius:12px; padding:16px; }
+input[type=password] { flex:1; min-width:220px; font:inherit; padding:9px 12px;
+  border-radius:8px; border:1px solid #2a323b; background:#0b0d10; color:#e6e8eb; }
+.hint { flex-basis:100%; color:#7a8290; font-size:12px; margin-top:2px; }
+.error { flex-basis:100%; color:#ff6b6b; font-size:13px; min-height:0; }
+.summary { display:flex; flex-wrap:wrap; gap:14px; align-items:center;
+  margin:24px 0 10px; color:#9aa3af; font-size:13px; }
+.summary .pill { background:#161a1f; border:1px solid #1e242b; border-radius:999px;
+  padding:4px 12px; }
+.summary .pill b { color:#e6e8eb; }
+.summary .grow { flex:1; }
+h2 { font-size:15px; font-weight:600; margin:26px 0 10px; }
+h2 .n { color:#7a8290; font-weight:400; }
+table { width:100%; border-collapse:collapse; font-size:13px;
+  border:1px solid #1e242b; border-radius:10px; overflow:hidden; }
+th, td { text-align:left; padding:9px 12px; border-top:1px solid #161b21;
+  vertical-align:top; word-break:break-word; }
+th { background:#11151a; color:#8a93a0; font-weight:600; font-size:12px;
+  text-transform:uppercase; letter-spacing:.03em; border-top:none; }
+tr:hover td { background:#0e1216; }
+td a { color:#9cc4ff; text-decoration:none; }
+td a:hover { text-decoration:underline; }
+.name { font-weight:600; }
+.muted { color:#7a8290; }
+.badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px;
+  border:1px solid #2a323b; }
+.badge.live { color:#7ee787; border-color:#234430; background:#0f1c14; }
+.badge.expired { color:#f0b049; border-color:#43381f; background:#1b160c; }
+.badge.deleted { color:#9aa3af; border-color:#2a323b; background:#13171c; }
+.yes { color:#7ee787; } .no { color:#5c636e; }
+.empty { color:#7a8290; padding:14px; font-size:13px; }
+.copy { font-size:11px; padding:2px 7px; margin-left:6px; }
+footer { color:#5c636e; font-size:12px; margin-top:30px; text-align:center; }
+@media (max-width:640px){ th.hide, td.hide { display:none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="t-title">Preview Admin</h1>
+    <button class="ghost" id="lang">中文</button>
+  </header>
+  <p class="sub" id="t-sub">Active &amp; expired preview pages</p>
+
+  <div class="login">
+    <input type="password" id="token" autocomplete="current-password" />
+    <button id="load">Load</button>
+    <button class="ghost" id="forget">Forget</button>
+    <div class="hint" id="t-hint"></div>
+    <div class="error" id="err"></div>
+  </div>
+
+  <div id="results" hidden>
+    <div class="summary">
+      <span class="pill"><span id="t-active-l">Active</span>: <b id="n-active">0</b></span>
+      <span class="pill"><span id="t-expired-l">Expired</span>: <b id="n-expired">0</b></span>
+      <span class="grow"></span>
+      <span class="muted" id="updated"></span>
+      <button class="ghost" id="refresh">Refresh</button>
+    </div>
+
+    <h2><span id="t-active-h">Active</span> <span class="n">(<span id="n-active2">0</span>)</span></h2>
+    <div id="tbl-active"></div>
+
+    <h2><span id="t-expired-h">Expired / inactive</span> <span class="n">(<span id="n-expired2">0</span>)</span></h2>
+    <div id="tbl-expired"></div>
+  </div>
+
+  <footer id="t-foot">Token is the sole admin credential — keep it safe.</footer>
+</main>
+
+<script>
+"use strict";
+const I18N = {
+  en: {
+    title:"Preview Admin", sub:"Active & expired preview pages",
+    tokenPh:"API token (admin credential)",
+    load:"Load", forget:"Forget", refresh:"Refresh",
+    hint:"This token is the sole admin credential — keep it safe. It is kept only in this browser tab (sessionStorage).",
+    invalid:"Invalid token or request failed.",
+    activeL:"Active", expiredL:"Expired", activeH:"Active", expiredH:"Expired / inactive",
+    cName:"Name", cLink:"Link", cCreated:"Created", cExpires:"Expires",
+    cSize:"Size", cFiles:"Files", cArch:"Archived", cStatus:"Status",
+    open:"open", copy:"copy", copied:"copied", none:"(none)",
+    updated:"updated", left:"left", expiredW:"expired",
+    pending:"expired (awaiting reclaim)", deleted:"deleted",
+    foot:"The token is the sole admin credential — keep it safe.",
+  },
+  zh: {
+    title:"预览管理后台", sub:"在线与已过期的预览页面",
+    tokenPh:"API 令牌（管理凭证）",
+    load:"加载", forget:"清除", refresh:"刷新",
+    hint:"该令牌是唯一的管理凭证，请妥善保存。仅保存在当前浏览器标签页（sessionStorage）。",
+    invalid:"令牌无效或请求失败。",
+    activeL:"在线", expiredL:"已过期", activeH:"在线页面", expiredH:"已过期 / 失效",
+    cName:"名称", cLink:"链接", cCreated:"创建时间", cExpires:"过期时间",
+    cSize:"大小", cFiles:"文件数", cArch:"已归档", cStatus:"状态",
+    open:"打开", copy:"复制", copied:"已复制", none:"（无）",
+    updated:"更新于", left:"剩余", expiredW:"已过期",
+    pending:"已过期（待回收）", deleted:"已删除",
+    foot:"令牌是唯一的管理凭证，请妥善保存。",
+  }
+};
+const TOKEN_KEY = "preview_admin_token";
+const LANG_KEY = "preview_admin_lang";
+let lang = localStorage.getItem(LANG_KEY) ||
+  ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+let lastItems = null;
+
+const $ = (id) => document.getElementById(id);
+const t = (k) => (I18N[lang][k] ?? I18N.en[k] ?? k);
+
+function fmtSize(n) {
+  n = Number(n) || 0; let f = n;
+  for (const u of ["B","KB","MB","GB","TB"]) {
+    if (f < 1024 || u === "TB") return u === "B" ? `${Math.round(f)} B` : `${f.toFixed(1)} ${u}`;
+    f /= 1024;
+  }
+}
+function fmtTime(ts) {
+  if (!ts) return "—";
+  try { return new Date(ts * 1000).toLocaleString(); } catch { return String(ts); }
+}
+function fmtRemaining(sec) {
+  sec = Number(sec) || 0;
+  if (sec <= 0) return t("expiredW");
+  const d = Math.floor(sec/86400), h = Math.floor((sec%86400)/3600),
+        m = Math.floor((sec%3600)/60);
+  if (d) return `${d}d ${h}h ${t("left")}`;
+  if (h) return `${h}h ${m}m ${t("left")}`;
+  if (m) return `${m}m ${t("left")}`;
+  return `${sec}s ${t("left")}`;
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+}
+
+function applyStaticI18n() {
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  $("lang").textContent = lang === "zh" ? "EN" : "中文";
+  $("t-title").textContent = t("title");
+  $("t-sub").textContent = t("sub");
+  $("token").placeholder = t("tokenPh");
+  $("load").textContent = t("load");
+  $("forget").textContent = t("forget");
+  $("refresh").textContent = t("refresh");
+  $("t-hint").textContent = t("hint");
+  $("t-active-l").textContent = t("activeL");
+  $("t-expired-l").textContent = t("expiredL");
+  $("t-active-h").textContent = t("activeH");
+  $("t-expired-h").textContent = t("expiredH");
+  $("t-foot").textContent = t("foot");
+}
+
+function statusBadge(p) {
+  if (p.status === "deleted") return `<span class="badge deleted">${t("deleted")}</span>`;
+  if (p.status === "live" && p.expired)
+    return `<span class="badge expired">${t("pending")}</span>`;
+  if (p.status === "live") return `<span class="badge live">live</span>`;
+  return `<span class="badge expired">${esc(p.status)}</span>`;
+}
+
+function renderTable(items, isActive) {
+  if (!items.length) return `<div class="empty">${t("none")}</div>`;
+  const head = `<tr>
+    <th>${t("cName")}</th>
+    <th>${t("cLink")}</th>
+    <th class="hide">${t("cCreated")}</th>
+    <th>${t("cExpires")}</th>
+    <th class="hide">${t("cSize")}</th>
+    <th class="hide">${t("cFiles")}</th>
+    <th>${t("cArch")}</th>
+    ${isActive ? "" : `<th>${t("cStatus")}</th>`}
+  </tr>`;
+  const rows = items.map(p => {
+    const link = isActive
+      ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${t("open")}</a>
+         <button class="ghost copy" data-url="${esc(p.url)}">${t("copy")}</button>`
+      : `<span class="muted">${t("expiredW")}</span>`;
+    const expCell = isActive
+      ? `${fmtTime(p.expires_at)}<br><span class="muted">${fmtRemaining(p.seconds_remaining)}</span>`
+      : `${fmtTime(p.expires_at)}`;
+    const arch = p.archived ? `<span class="yes">✓</span>` : `<span class="no">–</span>`;
+    return `<tr>
+      <td class="name">${esc(p.topic)}</td>
+      <td>${link}</td>
+      <td class="hide muted">${fmtTime(p.created_at)}</td>
+      <td>${expCell}</td>
+      <td class="hide">${fmtSize(p.size_bytes)}</td>
+      <td class="hide">${esc(p.file_count)}</td>
+      <td>${arch}</td>
+      ${isActive ? "" : `<td>${statusBadge(p)}</td>`}
+    </tr>`;
+  }).join("");
+  return `<table>${head}${rows}</table>`;
+}
+
+function render() {
+  if (!lastItems) return;
+  const active = lastItems
+    .filter(p => p.status === "live" && !p.expired)
+    .sort((a, b) => a.expires_at - b.expires_at);
+  const expired = lastItems
+    .filter(p => !(p.status === "live" && !p.expired))
+    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  $("n-active").textContent = $("n-active2").textContent = active.length;
+  $("n-expired").textContent = $("n-expired2").textContent = expired.length;
+  $("tbl-active").innerHTML = renderTable(active, true);
+  $("tbl-expired").innerHTML = renderTable(expired, false);
+  $("updated").textContent = `${t("updated")} ${new Date().toLocaleTimeString()}`;
+  $("results").hidden = false;
+}
+
+async function load() {
+  const token = $("token").value.trim();
+  $("err").textContent = "";
+  if (!token) return;
+  try {
+    const r = await fetch("/_api/list?all=1", { headers: { "X-API-Key": token } });
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    sessionStorage.setItem(TOKEN_KEY, token);
+    lastItems = data.previews || [];
+    render();
+  } catch (e) {
+    $("err").textContent = t("invalid");
+    $("results").hidden = true;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".copy");
+  if (b) {
+    navigator.clipboard?.writeText(b.dataset.url);
+    const o = b.textContent; b.textContent = t("copied");
+    setTimeout(() => { b.textContent = o; }, 1200);
+  }
+});
+$("lang").addEventListener("click", () => {
+  lang = lang === "zh" ? "en" : "zh";
+  localStorage.setItem(LANG_KEY, lang);
+  applyStaticI18n();
+  render();
+});
+$("load").addEventListener("click", load);
+$("refresh").addEventListener("click", load);
+$("token").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+$("forget").addEventListener("click", () => {
+  sessionStorage.removeItem(TOKEN_KEY);
+  $("token").value = ""; lastItems = null;
+  $("results").hidden = true; $("err").textContent = "";
+});
+
+applyStaticI18n();
+const saved = sessionStorage.getItem(TOKEN_KEY);
+if (saved) { $("token").value = saved; load(); }
+</script>
+</body>
+</html>

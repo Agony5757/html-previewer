@@ -1,5 +1,7 @@
 # html-previewer — ephemeral HTML preview hosting
 
+**English** · [简体中文](README.zh-CN.md)
+
 Publish short-lived HTML previews behind **unguessable capability URLs**, with
 automatic expiry + disk reclaim, an auto-generated directory listing for folders
 without an `index.html`, and optional append-only archiving to a Git repo.
@@ -36,6 +38,8 @@ https://preview.example.com/{hash}/{topic}/index.html
 - **Expiry** — after expiry the live copy is deleted and disk reclaimed (hourly
   reaper); any wrong/expired URL returns a custom **404**.
 - **Relative links work** — content is served from a normal directory tree.
+- **Admin homepage** — the site root (`/`) is a small dashboard: paste the API
+  key to list your **active** and **expired** preview pages (bilingual 中/EN).
 - **Optional auto-archive** of each publish to a Git repo (append-only).
 - **API key** for publishing and for listing the *real* directory of previews.
 - Self-contained: **stdlib-only Python**, no external runtime dependencies.
@@ -84,6 +88,33 @@ docker compose logs | grep 'API key'
 A single self-contained container serves `http://localhost:8787`; content and
 state persist in the `preview-data` volume. Set a fixed `PREVIEW_API_KEY` in
 `docker-compose.yml` (or a `.env`) to avoid the auto-generated one.
+
+## The API key — your admin credential
+The **`PREVIEW_API_KEY` is the sole credential** for every privileged action:
+publishing, deleting, listing the real directory of previews, and signing in to
+the admin homepage. **Save it somewhere safe** — anyone who has it can publish and
+manage previews. It is shown once at install time and stored (mode `0600`) in the
+service config; it is never printed in URLs or logs.
+
+**Forgot it, or want to rotate it?** There is no recovery — set a new value in the
+config and restart the service:
+
+| Mode | Edit | Then restart |
+|---|---|---|
+| System | `PREVIEW_API_KEY=…` in `/etc/preview/preview.env` | `sudo systemctl restart preview-api` |
+| User | `PREVIEW_API_KEY=…` in `~/.config/preview/preview.env` | `systemctl --user restart preview-api` |
+| Docker | `PREVIEW_API_KEY=…` in `docker-compose.yml`/`.env` (or the `-e` flag); delete the stored `…/state/api_key` if present | `docker compose up -d` |
+
+After rotating, update the client too: set the new `PREVIEW_API_KEY` in
+`~/.config/preview/config` so `preview-publish.sh` (and the admin page) keep working.
+
+## Admin homepage
+The site root (e.g. `https://preview.example.com/`) serves a small **admin
+dashboard**. Paste the API key and it lists your **active** and **expired /
+inactive** preview pages (name, link, created/expires + time remaining, size,
+files, archived, status), with a 中/EN language toggle. The key is the admin
+credential and is kept only in that browser tab (`sessionStorage`); use **Forget**
+to clear it. The dashboard reveals nothing without a valid key.
 
 ## Client usage
 Set `PREVIEW_API_KEY` (and optionally `PREVIEW_API_BASE`) in

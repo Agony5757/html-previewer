@@ -13,6 +13,7 @@ COPY server/preview_common.py server/preview_archive.py \
      server/preview_api.py server/reaper.py /app/
 COPY deploy/docker/entrypoint.sh /app/entrypoint.sh
 COPY deploy/__notfound.html /app/static/__notfound.html
+COPY deploy/admin.html /app/admin.html
 RUN chmod +x /app/entrypoint.sh
 
 # Self-contained defaults (the container serves static content itself).

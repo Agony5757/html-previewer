@@ -42,6 +42,7 @@ install -m 644 "$SRC/server/preview_archive.py" "$APP/preview_archive.py"
 install -m 644 "$SRC/server/preview_api.py"     "$APP/preview_api.py"
 install -m 644 "$SRC/server/reaper.py"          "$APP/reaper.py"
 install -m 644 "$SRC/deploy/__notfound.html"    "$STATIC/__notfound.html"
+install -m 644 "$SRC/deploy/admin.html"         "$LIVE/index.html"
 
 echo "==> config $CFG"
 if [[ -f "$CFG" ]]; then
