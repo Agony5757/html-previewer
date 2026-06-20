@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the preview expiry reaper periodically
+
+[Timer]
+# hourly, a few minutes past the hour, plus once shortly after boot
+OnBootSec=5min
+OnCalendar=*-*-* *:07:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

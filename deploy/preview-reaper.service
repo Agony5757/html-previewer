@@ -1,0 +1,12 @@
+[Unit]
+Description=Preview expiry reaper (reclaim disk for expired previews)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# runs as root (simple, single-tenant box)
+EnvironmentFile=/etc/preview/preview.env
+WorkingDirectory=/opt/preview
+ExecStart=/usr/bin/python3 /opt/preview/reaper.py
+NoNewPrivileges=yes
+PrivateTmp=yes

@@ -1,0 +1,8 @@
+# Build context excludes (Docker build context = repo root).
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+*.zip
+client/
+README.md

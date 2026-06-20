@@ -1,0 +1,26 @@
+# Run the self-contained preview hosting service in Docker.
+#   cd deploy/docker && docker compose up -d --build
+# Then publish against http://localhost:8787 (the API key is printed in logs:
+#   docker compose logs | grep 'API key').
+#
+# Override PREVIEW_API_KEY/PREVIEW_PUBLIC_HOST etc. via a .env file or `environment:`.
+services:
+  previewer:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: html-previewer:latest
+    container_name: html-previewer
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # Set a fixed key here to avoid the auto-generated one, e.g.:
+      # PREVIEW_API_KEY: "change-me"
+      PREVIEW_PUBLIC_HOST: "localhost:8787"
+      PREVIEW_PUBLIC_SCHEME: "http"
+    volumes:
+      - preview-data:/data
+
+volumes:
+  preview-data:

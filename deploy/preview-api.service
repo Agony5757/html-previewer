@@ -1,0 +1,18 @@
+[Unit]
+Description=Preview upload/management API (ephemeral HTML preview hosting)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# runs as root (simple, single-tenant box)
+EnvironmentFile=/etc/preview/preview.env
+WorkingDirectory=/opt/preview
+ExecStart=/usr/bin/python3 /opt/preview/preview_api.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
