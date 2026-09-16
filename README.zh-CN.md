@@ -128,6 +128,26 @@ curl -H "X-API-Key: $KEY" -H "X-Topic: my-report" -H "X-Days: 14" \
      --data-binary @report.zip https://preview.example.com/_api/publish
 ```
 
+### Python 客户端（Windows / Linux / macOS）
+同一个客户端还发布了零依赖的 Python 包 —— 可从 PyPI 安装
+（`pip install html-previewer`）或直接从仓库安装（`pip install ./client`），
+提供 `preview-publish` 命令和一个精简库：
+```bash
+preview-publish --base https://preview.example.com --key $KEY --save-config
+preview-publish ./site/ my-site 14        # 与 shell 客户端相同的用法
+preview-publish --list / --delete <hash>  # 另有 --info、--expiry、--open、--json
+```
+```python
+from html_previewer import PreviewClient
+c = PreviewClient("https://preview.example.com", api_key=key)
+print(c.publish("./site", topic="my-site", expiry="14")["url"])
+```
+配置：Windows 在 `%APPDATA%\preview\config`，其它系统在
+`~/.config/preview/config`（与上面同一个 shell 风格配置文件），或使用
+`PREVIEW_API_KEY` / `PREVIEW_API_BASE` 环境变量。完整文档见
+[client/README.md](client/README.md)；PyPI 发布流水线（Trusted Publishing）
+见 `.github/workflows/pypi.yml`。
+
 ## API
 | 方法 | 路径 | 鉴权 | 用途 |
 |---|---|---|---|

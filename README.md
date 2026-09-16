@@ -140,6 +140,27 @@ curl -H "X-API-Key: $KEY" -H "X-Topic: my-report" -H "X-Days: 14" \
      --data-binary @report.zip https://preview.example.com/_api/publish
 ```
 
+### Python client (Windows / Linux / macOS)
+The same client ships as a dependency-free Python package — install it from
+PyPI (`pip install html-previewer`) or directly from the repo
+(`pip install ./client`) — and get the `preview-publish` command plus a small
+library:
+```bash
+preview-publish --base https://preview.example.com --key $KEY --save-config
+preview-publish ./site/ my-site 14        # same interface as the shell client
+preview-publish --list / --delete <hash>  # plus --info, --expiry, --open, --json
+```
+```python
+from html_previewer import PreviewClient
+c = PreviewClient("https://preview.example.com", api_key=key)
+print(c.publish("./site", topic="my-site", expiry="14")["url"])
+```
+Config: `%APPDATA%\preview\config` on Windows, `~/.config/preview/config`
+elsewhere (same shell-style file as above), or `PREVIEW_API_KEY` /
+`PREVIEW_API_BASE` env vars. See [client/README.md](client/README.md) for the
+full documentation, and `.github/workflows/pypi.yml` for the PyPI release
+pipeline (Trusted Publishing).
+
 ## API
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
