@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "html-previewer"
-version = "0.1.0"
 description = "Cross-platform client (Windows/Linux/macOS) for html-previewer: publish short-lived HTML previews behind unguessable URLs"
 readme = "README.md"
 requires-python = ">=3.9"
+dynamic = ["version"]
 license = { text = "MIT" }
 authors = [{ name = "agony" }]
 keywords = ["html", "preview", "publish", "static-site", "ephemeral", "hosting"]
@@ -44,3 +44,6 @@ Issues = "https://github.com/Agony5757/html-previewer/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "html_previewer.__version__" }
