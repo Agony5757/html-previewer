@@ -35,12 +35,27 @@ push later (flush_pending).
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import shutil
 import subprocess
 import time
+
+try:
+    import fcntl
+except ImportError:  # Windows: no fcntl — degrade the interprocess lock
+    import msvcrt
+
+    class fcntl:  # minimal stand-in with the same flock() surface
+        LOCK_EX = 0
+        LOCK_UN = 1
+
+        @staticmethod
+        def flock(fh, op):
+            if op == fcntl.LOCK_EX:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
 
 import preview_common as C
 
