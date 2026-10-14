@@ -13,6 +13,9 @@ Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes
 PrivateTmp=yes
+# Keep a runaway archive push (git pack-objects) from strangling small boxes:
+# the unit dies instead of the machine, and systemd restarts it.
+MemoryMax=700M
 
 [Install]
 WantedBy=multi-user.target

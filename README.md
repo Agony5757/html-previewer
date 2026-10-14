@@ -182,38 +182,46 @@ pipeline (Trusted Publishing).
 | Manifest (sqlite) + state | `/var/lib/preview/` | `…/preview/state` or `/data/state` |
 | Config + API key | `/etc/preview/preview.env` (0600) | `~/.config/preview/preview.env` or `/data` |
 
-## Git archive (optional, append-only)
-Each publish can be committed into a local working clone and pushed to a Git
-repo (e.g. Gitea), browsable in the web UI and never pruned:
+## Git archive (optional, append-only, remote-authoritative)
+Each publish is committed and pushed to a Git repo (e.g. Gitea), browsable in
+the web UI and never pruned:
 ```
 previews/<YYYY>/<YYYY-MM-DD>__<hash>__<topic>/
     metadata.json
-    site/<hash>/<topic>/index.html ...
+    site/<topic>/index.html ...
 ```
 Enable by setting `PREVIEW_GIT_*` in the config (see `deploy/preview.env.example`)
 and `PREVIEW_GIT_ENABLED=1`, then restart. While disabled, nothing is
 cloned/committed (clean disk). A push failure is non-fatal — the commit stays
-local and the reaper retries.
+local (capped) and the reaper retries with backoff.
+
+**The remote is the only full copy; local storage stays thin.** The local
+archive repo (`PREVIEW_GIT_REPO_DIR`) is a depth-1, blob-less partial clone:
+it permanently holds just the tip commit and tree names (~KBs), never file
+contents and never history. Each publish hashes the live files straight into
+git objects (no working-tree copy), pushes, and then truncates the local repo
+back to the single tip commit — so superseded versions leave local disk as
+soon as the remote confirms them. Renewing an expired preview streams just
+that entry back with `git archive --remote` (needs a reachable remote and a
+server that supports `upload-archive`; Gitea does). When the remote is
+unreachable, renew returns a clear error and publishing keeps working; the
+unpushed backlog is capped (`PREVIEW_GIT_PENDING_MAX_COMMITS`).
 
 **Live updates vs. new URLs, mirrored in git.** The entry path is keyed by the
 preview's original `created_at` + hash + topic, so it is stable for the life of
 that hash. An in-place same-name update (same live hash) rewrites the same entry
 → git records a **MODIFIED** change; a fresh hash (re-publishing a name whose
 previous preview has **expired**, or `new=1`) lands in a new entry → git records
-a **NEW** addition. Old versions are never lost — they remain in the commit
-history.
+a **NEW** addition. Old versions are never lost — they remain in the remote's
+commit history.
 
 **Why a local expiry/delete never propagates to the remote.** The archive repo
-(`PREVIEW_GIT_REPO_DIR`, default `/var/lib/preview/archive-repo`) is a *dedicated*
-repository, physically **separate** from the live content tree
+is a *dedicated* repository, physically **separate** from the live content tree
 (`PREVIEW_LIVE_ROOT`, default `/var/www/preview/live`). Expiry and manual delete
 only ever remove paths under the live tree — they never touch the archive repo.
-Archiving only ever copies *into* the repo and runs `git add -A` + commit + push,
-so the remote only grows and full history is retained: a reclaim of live content
-never produces a deletion on the remote. Because the repo holds the `previews/`
-archive *only* (not the live tree, not the source code), no sparse-checkout /
-partial tracking is needed — the separation already scopes exactly what is
-versioned.
+Archiving only ever adds commits on top of the remote tip, so the remote only
+grows and full history is retained: a reclaim of live content never produces a
+deletion on the remote.
 
 ## Operations (system install)
 ```bash

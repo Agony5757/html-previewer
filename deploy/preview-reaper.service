@@ -10,3 +10,6 @@ WorkingDirectory=/opt/preview
 ExecStart=/usr/bin/python3 /opt/preview/reaper.py
 NoNewPrivileges=yes
 PrivateTmp=yes
+# The reaper pushes the git archive; cap its memory so a big push cannot
+# take the whole machine down.
+MemoryMax=700M

@@ -56,6 +56,16 @@ GIT_SSH_PORT = os.environ.get("PREVIEW_GIT_SSH_PORT", "22")
 GIT_KEY = os.environ.get("PREVIEW_GIT_KEY", "")
 GIT_AUTHOR_NAME = os.environ.get("PREVIEW_GIT_AUTHOR_NAME", "preview-archive")
 GIT_AUTHOR_EMAIL = os.environ.get("PREVIEW_GIT_AUTHOR_EMAIL", "preview-archive@example.com")
+# Push timeout: must cover uploading a full publish over a slow uplink
+GIT_PUSH_TIMEOUT = int(os.environ.get("PREVIEW_GIT_PUSH_TIMEOUT", "3600"))
+# How long restore/flush wait on the archive lock before giving up
+GIT_LOCK_TIMEOUT = int(os.environ.get("PREVIEW_GIT_LOCK_TIMEOUT", "60"))
+# Timeout for streaming one entry back with git archive --remote
+GIT_RESTORE_TIMEOUT = int(os.environ.get("PREVIEW_GIT_RESTORE_TIMEOUT", "1800"))
+# While the remote is unreachable, cap how many unpushed commits pile up
+GIT_PENDING_MAX_COMMITS = int(os.environ.get("PREVIEW_GIT_PENDING_MAX_COMMITS", "30"))
+# After a failed push, wait this long before the reaper retries (seconds)
+GIT_PUSH_RETRY_BACKOFF = int(os.environ.get("PREVIEW_GIT_PUSH_RETRY_BACKOFF", "21600"))
 
 _TOPIC_RE = re.compile(r"[^A-Za-z0-9._-]+")
 

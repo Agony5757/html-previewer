@@ -767,8 +767,9 @@ class Handler(BaseHTTPRequestHandler):
                        The git archive (if any) is kept, so it can be renewed.
         action=renew   revive an expired/inactive preview for `days` (default 7),
                        a fresh window from now. If the live copy was already
-                       reclaimed it is restored from the git archive; if it was
-                       never archived there is nothing to restore -> 409.
+                       reclaimed it is streamed back from the git archive's
+                       remote; 409 if it was never archived or the remote is
+                       unreachable (re-publish instead).
         """
         if not h or "/" in h or ".." in h:
             return self._err(400, "bad hash")
@@ -819,8 +820,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not restored:
                     return self._err(
                         409,
-                        "content was already reclaimed and is not in the git "
-                        "archive; re-publish it instead of renewing")
+                        "could not restore this preview from the git archive "
+                        "(it was never archived, or the git remote is currently "
+                        "unreachable); re-publish it instead of renewing")
 
             conn.execute(
                 "UPDATE previews SET status='live', expires_at=?, days=?, "

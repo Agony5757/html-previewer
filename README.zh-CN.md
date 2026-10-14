@@ -169,32 +169,36 @@ print(c.publish("./site", topic="my-site", expiry="14")["url"])
 | 清单（sqlite）+ 状态 | `/var/lib/preview/` | `…/preview/state` 或 `/data/state` |
 | 配置 + API 密钥 | `/etc/preview/preview.env`（0600） | `~/.config/preview/preview.env` 或 `/data` |
 
-## Git 归档（可选，只增不删）
-每次发布都可以提交到一个本地工作副本并推送到 Git 仓库（例如 Gitea），可在网页里
-浏览且永不被裁剪：
+## Git 归档（可选，只增不删，远端为准）
+每次发布都会提交并推送到 Git 仓库（例如 Gitea），可在网页里浏览且永不被裁剪：
 ```
 previews/<YYYY>/<YYYY-MM-DD>__<hash>__<topic>/
     metadata.json
-    site/<hash>/<topic>/index.html ...
+    site/<topic>/index.html ...
 ```
 在配置里设置 `PREVIEW_GIT_*`（见 `deploy/preview.env.example`）和
 `PREVIEW_GIT_ENABLED=1`，然后重启即可启用。禁用时不克隆/不提交（磁盘干净）。推送
-失败不致命——提交先留在本地，reaper 之后会重试。
+失败不致命——提交先留在本地（有上限），reaper 之后会带退避地重试。
+
+**远端是唯一的全量副本，本地存储始终很薄。** 本地归档仓库
+（`PREVIEW_GIT_REPO_DIR`）是一个 depth-1、无 blob 的部分克隆：常驻只保存顶端
+commit 和树结构（~KB 级），既不存文件内容也不存历史。每次发布把在线文件直接
+hash 成 git 对象（不产生工作区副本），推送成功后立刻把本地裁剪回单个顶端
+commit——旧版本在远端确认后马上离开本地磁盘。续期已过期的预览时，用
+`git archive --remote` 只流式拉回该条目（要求远端可达且支持 `upload-archive`，
+Gitea 支持）。远端不可达时续期会明确报错，发布不受影响；未推送积压有上限
+（`PREVIEW_GIT_PENDING_MAX_COMMITS`）。
 
 **在线更新 vs 新 URL，与 git 保持一致。** 归档条目的路径由预览的原始 `created_at` +
 hash + topic 决定，因此在该 hash 的整个生命周期内是稳定的。一次原地同名更新（同一个
 在线 hash）会重写同一个条目 → git 记录为 **MODIFIED（修改）**；一个新的 hash（重新
 发布一个之前已**过期**的名字，或 `new=1`）会落到一个新条目 → git 记录为 **NEW
-（新增）**。旧版本永不丢失——它们都保留在提交历史中。
+（新增）**。旧版本永不丢失——它们都保留在远端的提交历史中。
 
-**为什么本地的过期/删除绝不会传播到远端。** 归档仓库
-（`PREVIEW_GIT_REPO_DIR`，默认 `/var/lib/preview/archive-repo`）是一个*专用*仓库，
-在物理上与在线内容树（`PREVIEW_LIVE_ROOT`，默认 `/var/www/preview/live`）**分离**。
-过期与手动删除只会移除在线树下的路径——它们绝不会触碰归档仓库。归档只会往仓库里
-*拷入*，并执行 `git add -A` + 提交 + 推送，因此远端只增不减、完整历史被保留：回收
-在线内容绝不会在远端产生删除。由于该仓库**只**保存 `previews/` 归档（不含在线树，
-也不含源码），因此无需 sparse-checkout / 部分追踪——这种分离本身就精确地界定了被
-版本化的范围。
+**为什么本地的过期/删除绝不会传播到远端。** 归档仓库是一个*专用*仓库，在物理上与
+在线内容树（`PREVIEW_LIVE_ROOT`，默认 `/var/www/preview/live`）**分离**。过期与
+手动删除只会移除在线树下的路径——它们绝不会触碰归档仓库。归档只会在远端顶端之上
+追加提交，因此远端只增不减、完整历史被保留：回收在线内容绝不会在远端产生删除。
 
 ## 运维（系统安装）
 ```bash
